@@ -19,7 +19,7 @@ A production-ready decentralized social network built on the Sui blockchain, fea
 
 ### Public Deployment
 
-**Live URL:** [Coming Soon - Will be deployed to Vercel]
+**Live URL:** https://4x-builders-suitter-oo8l.vercel.app/
 
 ## Build Instructions
 
