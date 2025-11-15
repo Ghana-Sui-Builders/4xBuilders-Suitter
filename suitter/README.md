@@ -2,6 +2,95 @@
 
 A production-ready decentralized social network built on the Sui blockchain.
 
+## Team Members
+
+- **Maranatha Odai**
+- **Richmond Andoh**
+- **Abdul Hafiz**
+- **Andraos Jimoh**
+
+## 🚀 Quick Start
+
+### Sui Package Object ID
+
+```text
+0x90ca91fe67c9f450415edaf978c6766111f4ca5583f3ca3cecfd8a60b05a01b9
+```
+
+### Public Deployment
+
+**Live URL:** [Coming Soon - Deploy to Vercel/Netlify]
+
+## Build Instructions
+
+### Prerequisites
+
+- Node.js 18+ and pnpm (or npm/yarn)
+- Slush wallet browser extension installed
+- Sui CLI for contract deployment
+
+### Frontend Setup
+
+1. Clone the repository:
+
+```bash
+git clone <repository-url>
+cd suitter
+```
+
+2. Install dependencies:
+
+```bash
+pnpm install
+```
+
+3. Start the development server:
+
+```bash
+pnpm dev
+```
+
+4. Open your browser and navigate to `http://localhost:3000`
+
+### Smart Contract Deployment
+
+1. Navigate to the contracts directory:
+
+```bash
+cd suitter-contracts/suitter
+```
+
+2. Build the Move contract:
+
+```bash
+sui move build
+```
+
+3. Deploy to Sui testnet:
+
+```bash
+sui client publish --gas-budget 100000000
+```
+
+4. Copy the Package ID and ProfileRegistry ID from the deployment output
+
+5. Update the frontend configuration in `suitter/src/config/contracts.ts`:
+
+```typescript
+export const CONTRACT_CONFIG = {
+  packageId: 'YOUR_PACKAGE_ID',
+  profileRegistryId: 'YOUR_PROFILE_REGISTRY_ID',
+}
+```
+
+### Building for Production
+
+```bash
+pnpm build
+```
+
+The built files will be in the `dist` directory, ready for deployment.
+
 ## Features
 
 ### Core Features

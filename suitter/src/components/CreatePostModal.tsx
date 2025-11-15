@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { useAuth } from '@/context/AuthContext'
+import { useCurrentAccount } from '@mysten/dapp-kit'
 import { useSui } from '@/hooks/useSui'
 import {
   Dialog,
@@ -24,8 +24,8 @@ interface CreatePostModalProps {
 }
 
 export function CreatePostModal({ open, onOpenChange, onPostCreated }: CreatePostModalProps) {
-  const { currentUser } = useAuth()
-  const { createPost } = useSui()
+  const currentAccount = useCurrentAccount()
+  const { createPost, getProfile } = useSui()
   const { toast } = useToast()
   const [content, setContent] = useState('')
   const [images, setImages] = useState<string[]>([])
@@ -35,7 +35,7 @@ export function CreatePostModal({ open, onOpenChange, onPostCreated }: CreatePos
 
   const charCount = content.length
   const isOverLimit = charCount > MAX_POST_CHARS
-  const canPost = content.trim().length > 0 && !isOverLimit && !isPosting
+  const canPost = content.trim().length > 0 && !isOverLimit && !isPosting && currentAccount
 
   // Extract URLs from content
   const urlRegex = /(https?:\/\/[^\s]+)/g
@@ -64,13 +64,72 @@ export function CreatePostModal({ open, onOpenChange, onPostCreated }: CreatePos
   }
 
   const handlePost = async () => {
-    if (!canPost || !currentUser) return
+    if (!canPost || !currentAccount) return
 
     setIsPosting(true)
     try {
-      // For now, we'll create a mock post locally since the blockchain integration is not fully implemented
-      // In production, this would call createPost which interacts with the Sui blockchain
-      await createPost(content, images)
+      console.log('Creating post with content:', content)
+      console.log('Current account:', currentAccount)
+      console.log('Images:', images)
+      
+      // Fetch user profile from blockchain
+      const userProfile = await getProfile(currentAccount.address)
+      
+      // Create user object from profile or fallback to address
+      const user = userProfile ? {
+        id: userProfile.id,
+        address: userProfile.address,
+        username: userProfile.username,
+        displayName: userProfile.displayName,
+        bio: userProfile.bio,
+        avatar: userProfile.avatar,
+        banner: userProfile.banner,
+        joinedAt: userProfile.joinedAt,
+        followersCount: userProfile.followersCount,
+        followingCount: userProfile.followingCount,
+      } : {
+        id: currentAccount.address.slice(0, 10),
+        address: currentAccount.address,
+        username: `User ${currentAccount.address.slice(0, 6)}`,
+        displayName: `User ${currentAccount.address.slice(0, 6)}`,
+        bio: '',
+        avatar: '/placeholder-user.jpg',
+        banner: '/placeholder.jpg',
+        joinedAt: new Date(),
+        followersCount: 0,
+        followingCount: 0,
+      }
+      
+      // Create post on blockchain
+      const txResult = await createPost(content, images)
+      console.log('Transaction result:', txResult)
+      
+      // Use the object ID if available, otherwise use digest
+      const postId = (txResult as any).objectId || (txResult as any).digest || txResult
+      
+      // Save post locally so it appears immediately
+      const newPost = {
+        id: postId,
+        author: user,
+        authorId: user.id,
+        content,
+        images,
+        createdAt: new Date(),
+        likeCount: 0,
+        replyCount: 0,
+        reshareCount: 0,
+        viewCount: 0,
+        liked: false,
+        reshared: false,
+        bookmarked: false,
+      }
+      
+      console.log('Saving post locally:', newPost)
+      
+      // Store in localStorage
+      const existingPosts = JSON.parse(localStorage.getItem('suitter_posts') || '[]')
+      existingPosts.unshift(newPost)
+      localStorage.setItem('suitter_posts', JSON.stringify(existingPosts))
       
       toast({
         description: 'Post created successfully!',
@@ -84,11 +143,13 @@ export function CreatePostModal({ open, onOpenChange, onPostCreated }: CreatePos
       if (onPostCreated) {
         onPostCreated()
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to create post:', error)
+      console.error('Error message:', error?.message)
+      console.error('Error stack:', error?.stack)
       toast({
         title: 'Error',
-        description: 'Failed to create post. Please try again.',
+        description: error?.message || 'Failed to create post. Please try again.',
       })
     } finally {
       setIsPosting(false)
@@ -103,12 +164,9 @@ export function CreatePostModal({ open, onOpenChange, onPostCreated }: CreatePos
     }
   }
 
-  const initials = currentUser?.displayName
-    .split(' ')
-    .map((n) => n[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2) || 'U'
+  const initials = currentAccount?.address
+    ?.slice(2, 4)
+    .toUpperCase() || 'U'
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -123,7 +181,7 @@ export function CreatePostModal({ open, onOpenChange, onPostCreated }: CreatePos
         <div className="mt-4 space-y-4">
           <div className="flex gap-4">
             <Avatar className="w-12 h-12">
-              <AvatarImage src={currentUser?.avatar} alt={currentUser?.displayName} />
+              <AvatarImage src="/placeholder-user.jpg" alt={currentAccount?.address || 'User'} />
               <AvatarFallback>{initials}</AvatarFallback>
             </Avatar>
 

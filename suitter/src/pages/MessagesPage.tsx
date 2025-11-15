@@ -9,6 +9,7 @@ import { formatDistanceToNow, format } from 'date-fns'
 import { getConversations, getMessages, mockUsers, type Conversation, type Message, type User } from '@/lib/mockData'
 import { useAuth } from '@/context/AuthContext'
 import { useMessaging } from '@/hooks/use-messaging'
+import { useSui } from '@/hooks/useSui'
 import { EmojiPicker } from '@/components/EmojiPicker'
 import { cn } from '@/lib/utils'
 import { useToast } from '@/hooks/useToast'
@@ -16,6 +17,7 @@ import { useToast } from '@/hooks/useToast'
 export default function MessagesPage() {
   const { currentUser } = useAuth()
   const { messagingClient, isReady, isLoading: isMessagingLoading } = useMessaging()
+  const { createConversation, sendMessage: sendMessageOnChain, getConversations: getConversationsFromChain, getMessages: getMessagesFromChain } = useSui()
   const { toast } = useToast()
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null)
@@ -30,21 +32,120 @@ export default function MessagesPage() {
   const messagesContainerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    setTimeout(() => {
-      setConversations(getConversations())
-      setLoading(false)
-    }, 500)
-  }, [])
+    const loadConversations = async () => {
+      try {
+        // Try to load from blockchain first
+        if (currentUser?.address) {
+          const blockchainConversations = await getConversationsFromChain()
+          if (blockchainConversations.length > 0) {
+            // Convert blockchain conversations to app format
+            const formattedConversations: Conversation[] = blockchainConversations.map((conv: any) => {
+              const content = conv.data?.content?.fields || {}
+              const participant1 = content.participant1 || ''
+              const participant2 = content.participant2 || ''
+              const otherParticipant = participant1 === currentUser.address ? participant2 : participant1
+              
+              // Find user info for the other participant
+              const otherUser = mockUsers.find(u => u.address === otherParticipant) || {
+                id: otherParticipant,
+                address: otherParticipant,
+                displayName: otherParticipant.slice(0, 6) + '...',
+                username: otherParticipant.slice(0, 6),
+                avatar: '',
+              }
+              
+              return {
+                id: conv.data?.objectId || `conv-${Date.now()}`,
+                participants: [currentUser, otherUser],
+                lastMessage: {
+                  id: '',
+                  conversationId: conv.data?.objectId || '',
+                  senderId: '',
+                  sender: currentUser,
+                  recipientId: '',
+                  content: '',
+                  images: [],
+                  read: false,
+                  createdAt: new Date(),
+                },
+                lastMessageTime: new Date(),
+                unreadCount: 0,
+              }
+            })
+            
+            setConversations(formattedConversations)
+            setLoading(false)
+            return
+          }
+        }
+        
+        // Fallback to mock data
+        setTimeout(() => {
+          setConversations(getConversations())
+          setLoading(false)
+        }, 500)
+      } catch (error) {
+        console.error('Error loading conversations:', error)
+        // Fallback to mock data
+        setTimeout(() => {
+          setConversations(getConversations())
+          setLoading(false)
+        }, 500)
+      }
+    }
+    
+    loadConversations()
+  }, [currentUser, getConversationsFromChain])
 
   useEffect(() => {
-    if (selectedConversation) {
-      // Load messages for the selected conversation
-      const conversationMessages = getMessages(selectedConversation.id)
-      setMessages(conversationMessages)
-    } else {
-      setMessages([])
+    const loadMessages = async () => {
+      if (selectedConversation) {
+        try {
+          // Try to load from blockchain if conversation ID looks like a blockchain ID
+          if (selectedConversation.id.startsWith('0x')) {
+            const blockchainMessages = await getMessagesFromChain(selectedConversation.id)
+            if (blockchainMessages.length > 0) {
+              // Convert blockchain messages to app format
+              const formattedMessages: Message[] = blockchainMessages.map((msg: any) => {
+                const sender = msg.sender === currentUser?.address ? currentUser : 
+                  selectedConversation.participants.find(p => p.address === msg.sender) || currentUser
+                const recipient = msg.recipient === currentUser?.address ? currentUser :
+                  selectedConversation.participants.find(p => p.address === msg.recipient) || currentUser
+                
+                return {
+                  id: msg.id,
+                  conversationId: msg.conversationId,
+                  senderId: sender.id,
+                  sender,
+                  recipientId: recipient.id,
+                  content: msg.content,
+                  images: [],
+                  read: false,
+                  createdAt: new Date(Number(msg.timestamp)),
+                }
+              })
+              
+              setMessages(formattedMessages)
+              return
+            }
+          }
+          
+          // Fallback to mock data
+          const conversationMessages = getMessages(selectedConversation.id)
+          setMessages(conversationMessages)
+        } catch (error) {
+          console.error('Error loading messages:', error)
+          // Fallback to mock data
+          const conversationMessages = getMessages(selectedConversation.id)
+          setMessages(conversationMessages)
+        }
+      } else {
+        setMessages([])
+      }
     }
-  }, [selectedConversation])
+    
+    loadMessages()
+  }, [selectedConversation, currentUser, getMessagesFromChain])
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -71,31 +172,103 @@ export default function MessagesPage() {
     setSending(true)
 
     try {
-      // Try to send via blockchain if ready
+      let conversationId = selectedConversation?.id
       let sentViaBlockchain = false
-      if (isReady && messagingClient) {
+
+      // If starting a new conversation, create it on blockchain first
+      if (showNewMessage && selectedUser && recipient.address) {
         try {
-          console.log('Attempting to send via blockchain to:', recipient.address)
-          // The actual messaging client API needs proper implementation
-          // For now, we'll just log and use local storage
-          // Uncomment and implement when you have the proper messaging setup:
-          // await messagingClient.executeSendMessageTransaction({
-          //   signer: currentAccount,
-          //   channelId: 'your-channel-id',
-          //   memberCapId: 'your-member-cap-id',
-          //   message: messageInput,
-          //   encryptedKey: 'your-encrypted-key',
-          // })
+          console.log('Creating new conversation with:', recipient.address)
+          const result = await createConversation(recipient.address)
+          conversationId = result.objectId || result.digest
+          sentViaBlockchain = true
+          console.log('Conversation created on blockchain:', conversationId)
           
-          console.log('Blockchain messaging not fully implemented yet, using local storage')
-          // sentViaBlockchain = true
+          // Create conversation object for UI
+          const newConversation: Conversation = {
+            id: conversationId,
+            participants: [currentUser, selectedUser],
+            lastMessage: {
+              id: '',
+              conversationId,
+              senderId: currentUser.id,
+              sender: currentUser,
+              recipientId: selectedUser.id,
+              content: messageInput,
+              images: [],
+              read: false,
+              createdAt: new Date(),
+            },
+            lastMessageTime: new Date(),
+            unreadCount: 0,
+          }
+          
+          setConversations([newConversation, ...conversations])
+          setSelectedConversation(newConversation)
+          setShowNewMessage(false)
+          setSelectedUser(null)
         } catch (error) {
-          console.error('Blockchain message failed:', error)
+          console.error('Failed to create conversation on blockchain:', error)
+          toast({
+            title: 'Warning',
+            description: 'Failed to create conversation on blockchain. Using local storage.',
+            variant: 'default',
+          })
         }
       }
 
-      // Create and store message locally
-      if (showNewMessage && selectedUser) {
+      // Send message on blockchain if we have a valid conversation ID
+      if (conversationId && conversationId.startsWith('0x')) {
+        try {
+          console.log('Sending message on blockchain to conversation:', conversationId)
+          await sendMessageOnChain(conversationId, messageInput)
+          sentViaBlockchain = true
+          console.log('Message sent on blockchain')
+          
+          // Reload messages from blockchain
+          if (conversationId) {
+            const blockchainMessages = await getMessagesFromChain(conversationId)
+            if (blockchainMessages.length > 0) {
+              const formattedMessages: Message[] = blockchainMessages.map((msg: any) => {
+                const sender = msg.sender === currentUser?.address ? currentUser : 
+                  (selectedConversation?.participants.find(p => p.address === msg.sender) || currentUser)
+                const recipient = msg.recipient === currentUser?.address ? currentUser :
+                  (selectedConversation?.participants.find(p => p.address === msg.recipient) || currentUser)
+                
+                return {
+                  id: msg.id,
+                  conversationId: msg.conversationId,
+                  senderId: sender.id,
+                  sender,
+                  recipientId: recipient.id,
+                  content: msg.content,
+                  images: [],
+                  read: false,
+                  createdAt: new Date(Number(msg.timestamp)),
+                }
+              })
+              
+              setMessages(formattedMessages)
+              setMessageInput('')
+              toast({
+                description: 'Message sent on blockchain!',
+              })
+              setSending(false)
+              return
+            }
+          }
+        } catch (error) {
+          console.error('Failed to send message on blockchain:', error)
+          toast({
+            title: 'Warning',
+            description: 'Failed to send message on blockchain. Using local storage.',
+            variant: 'default',
+          })
+        }
+      }
+
+      // Fallback to local storage if blockchain fails or conversation ID is not valid
+      if (showNewMessage && selectedUser && !conversationId?.startsWith('0x')) {
         // Starting a new conversation
         const newConversation: Conversation = {
           id: `conv-${Date.now()}`,

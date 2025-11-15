@@ -88,7 +88,7 @@ export function PostCard({
       className="group p-6 border-b border-border hover:bg-muted/50 transition-colors"
     >
       <div className="flex gap-4">
-        <Link to={`/profile/${post.author.id}`}>
+        <Link to={`/profile/${post.author.address}`}>
           <Avatar className="w-12 h-12">
             <AvatarImage src={post.author.avatar} alt={post.author.displayName} />
             <AvatarFallback>{initials}</AvatarFallback>
@@ -98,7 +98,7 @@ export function PostCard({
         <div className="flex-1 min-w-0">
           {/* Header */}
           <div className="flex items-start justify-between mb-2">
-            <Link to={`/profile/${post.author.id}`} className="flex items-center gap-2 hover:opacity-80">
+            <Link to={`/profile/${post.author.address}`} className="flex items-center gap-2 hover:opacity-80">
               <span className="font-semibold text-foreground">{post.author.displayName}</span>
               <span className="text-sm text-muted-foreground">@{post.author.username}</span>
               <span className="text-sm text-muted-foreground">·</span>

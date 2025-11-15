@@ -9,14 +9,15 @@ import { ArrowLeft, Heart, MessageCircle, Send, Image as ImageIcon, X } from 'lu
 import { formatDistanceToNow } from 'date-fns'
 import { getPostById } from '@/lib/mockData'
 import { type Post, type Reply } from '@/lib/types'
-import { useAuth } from '@/context/AuthContext'
+import { useCurrentAccount } from '@mysten/dapp-kit'
 import { cn } from '@/lib/utils'
 import { useToast } from '@/hooks/useToast'
 import { EmojiPicker } from '@/components/EmojiPicker'
+import { useSui } from '@/hooks/useSui'
 
 export default function PostDetailPage() {
   const { id } = useParams()
-  const { currentUser } = useAuth()
+  const currentAccount = useCurrentAccount()
   const [post, setPost] = useState<Post | null>(null)
   const [replies, setReplies] = useState<Reply[]>([])
   const [replyContent, setReplyContent] = useState('')
@@ -26,44 +27,77 @@ export default function PostDetailPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const MAX_IMAGES = 4
   const { toast } = useToast()
+  const { getPostById: getPostFromChain, commentOnPost, getProfile } = useSui()
 
   useEffect(() => {
     if (id) {
-      setTimeout(() => {
-        const foundPost = getPostById(id)
-        setPost(foundPost || null)
-        // Mock replies
-        if (foundPost) {
-          setReplies([
-            {
-              id: '1',
-              postId: id,
-              authorId: '2',
-              author: {
-                id: '2',
-                address: '0xabcdef',
-                username: 'bob_dev',
-                displayName: 'Bob Developer',
-                bio: 'Developer',
-                avatar: '/placeholder-user.jpg',
-                banner: '/placeholder.jpg',
-                joinedAt: new Date(),
-                followersCount: 100,
-                followingCount: 50,
-              },
-              content: 'Great post! Really insightful.',
-              images: [],
-              createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
-              likeCount: 5,
-              liked: false,
-              replies: [],
-            },
-          ])
+      const fetchPost = async () => {
+        setLoading(true)
+        try {
+          const chainPost = await getPostFromChain(id)
+          
+          if (!chainPost) {
+            // Fall back to mock data
+            const foundPost = getPostById(id)
+            setPost(foundPost || null)
+            if (foundPost) {
+              setReplies([
+                {
+                  id: '1',
+                  postId: id,
+                  authorId: '2',
+                  author: {
+                    id: '2',
+                    address: '0xabcdef',
+                    username: 'bob_dev',
+                    displayName: 'Bob Developer',
+                    bio: 'Developer',
+                    avatar: '/placeholder-user.jpg',
+                    banner: '/placeholder.jpg',
+                    joinedAt: new Date(),
+                    followersCount: 100,
+                    followingCount: 50,
+                  },
+                  content: 'Great post! Really insightful.',
+                  images: [],
+                  createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+                  likeCount: 5,
+                  liked: false,
+                  replies: [],
+                },
+              ])
+            }
+          } else {
+            // Enrich post with profile data
+            if (chainPost.author.address) {
+              const profile = await getProfile(chainPost.author.address)
+              if (profile) {
+                chainPost.author = {
+                  ...chainPost.author,
+                  username: profile.username,
+                  displayName: profile.displayName,
+                  avatar: profile.avatar,
+                  bio: profile.bio,
+                }
+              }
+            }
+            setPost(chainPost)
+            // Comments/replies would be fetched from blockchain here
+            setReplies([])
+          }
+        } catch (error) {
+          console.error('Failed to fetch post:', error)
+          // Fall back to mock data
+          const foundPost = getPostById(id)
+          setPost(foundPost || null)
+        } finally {
+          setLoading(false)
         }
-        setLoading(false)
-      }, 500)
+      }
+
+      fetchPost()
     }
-  }, [id])
+  }, [id, getPostFromChain, getProfile])
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
@@ -87,31 +121,80 @@ export default function PostDetailPage() {
     setReplyImages(prev => prev.filter((_, i) => i !== index))
   }
 
-  const handleReply = () => {
-    if (!replyContent.trim() || !currentUser || !post) return
+  const handleReply = async () => {
+    if (!replyContent.trim() || !currentAccount || !post) return
 
-    const newReply: Reply = {
-      id: Date.now().toString(),
-      postId: post.id,
-      authorId: currentUser.id,
-      author: currentUser,
-      content: replyContent,
-      images: replyImages,
-      createdAt: new Date(),
-      likeCount: 0,
-      liked: false,
-      replies: [],
+    try {
+      // Send comment to blockchain
+      await commentOnPost(post.id, replyContent, replyImages)
+
+      // Fetch user profile from blockchain
+      const userProfile = await getProfile(currentAccount.address)
+      
+      // Create user object from profile or fallback to address
+      const user = userProfile ? {
+        id: userProfile.id,
+        address: userProfile.address,
+        username: userProfile.username,
+        displayName: userProfile.displayName,
+        bio: userProfile.bio,
+        avatar: userProfile.avatar,
+        banner: userProfile.banner,
+        joinedAt: userProfile.joinedAt,
+        followersCount: userProfile.followersCount,
+        followingCount: userProfile.followingCount,
+      } : {
+        id: currentAccount.address.slice(0, 10),
+        address: currentAccount.address,
+        username: `User ${currentAccount.address.slice(0, 6)}`,
+        displayName: `User ${currentAccount.address.slice(0, 6)}`,
+        bio: '',
+        avatar: '/placeholder-user.jpg',
+        banner: '/placeholder.jpg',
+        joinedAt: new Date(),
+        followersCount: 0,
+        followingCount: 0,
+      }
+
+      const newReply: Reply = {
+        id: Date.now().toString(),
+        postId: post.id,
+        authorId: user.id,
+        author: user,
+        content: replyContent,
+        images: replyImages,
+        createdAt: new Date(),
+        likeCount: 0,
+        liked: false,
+        replies: [],
+      }
+
+      setReplies([newReply, ...replies])
+      setReplyContent('')
+      setReplyImages([])
+      setPost({ ...post, replyCount: post.replyCount + 1 })
+
+      toast({
+        description: 'Reply posted successfully',
+      })
+    } catch (error) {
+      console.error('Failed to post reply:', error)
+      toast({
+        title: 'Error',
+        description: 'Failed to post reply. Please try again.',
+      })
     }
-
-    setReplies([newReply, ...replies])
-    setReplyContent('')
-    setReplyImages([])
-    setPost({ ...post, replyCount: post.replyCount + 1 })
   }
 
   const handleLike = (postId: string) => {
+    // Note: Liking is tracked locally for now
     if (post && post.id === postId) {
+      const wasLiked = post.liked
       setPost({ ...post, liked: !post.liked, likeCount: post.liked ? post.likeCount - 1 : post.likeCount + 1 })
+      
+      toast({
+        description: wasLiked ? 'Post unliked' : 'Post liked',
+      })
     }
   }
 
@@ -248,12 +331,12 @@ export default function PostDetailPage() {
       </div>
 
       {/* Reply Composer */}
-      {currentUser && (
+      {currentAccount && (
         <div className="p-6 border-b border-border">
           <div className="flex gap-4">
             <Avatar className="w-10 h-10">
-              <AvatarImage src={currentUser.avatar} />
-              <AvatarFallback>{currentUser.displayName[0]}</AvatarFallback>
+              <AvatarImage src="/placeholder-user.jpg" />
+              <AvatarFallback>{currentAccount.address.slice(2, 4).toUpperCase()}</AvatarFallback>
             </Avatar>
             <div className="flex-1 space-y-2">
               <div className="relative">

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { PostCard } from '@/components/PostCard'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { WalletConnectButton } from '@/components/WalletConnectButton'
 import {
   Dialog,
   DialogContent,
@@ -28,20 +29,27 @@ import {
   Check,
   MessageCircle,
   Heart,
-  Repeat2,
   Image as ImageIcon,
-  Verified
+  Verified,
+  Loader2
 } from 'lucide-react'
 import { format } from 'date-fns'
-import { getUserById, getPosts, getRepliesByUserId, getMediaPostsByUserId, getLikedPostsByUserId, mockReplies, mockMediaPosts, mockLikedPosts, type User, type Post } from '@/lib/mockData'
+import { getUserById, getPosts, getRepliesByUserId, getMediaPostsByUserId, getLikedPostsByUserId, mockReplies, mockMediaPosts, mockLikedPosts } from '@/lib/mockData'
+import { type User, type Post } from '@/lib/types'
 import { useAuth } from '@/context/AuthContext'
 import { cn } from '@/lib/utils'
 import { useToast } from '@/hooks/useToast'
+import { useSui } from '@/hooks/useSui'
+import { isContractConfigured, getConfigurationError } from '@/config/contracts'
 
 export default function ProfilePage() {
   const { id } = useParams()
   const { currentUser } = useAuth()
+  const { updateProfile: updateProfileOnChain, getUserProfileId, checkProfileExists, createProfile } = useSui()
+  const { toast } = useToast()
   const [user, setUser] = useState<User | null>(null)
+  const [profileId, setProfileId] = useState<string | null>(null)
+  const [hasOnChainProfile, setHasOnChainProfile] = useState<boolean>(false)
   const [posts, setPosts] = useState<Post[]>([])
   const [replies, setReplies] = useState<Post[]>([])
   const [mediaPosts, setMediaPosts] = useState<Post[]>([])
@@ -50,6 +58,11 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true)
   const [isFollowing, setIsFollowing] = useState(false)
   const [showEditDialog, setShowEditDialog] = useState(false)
+  const [showCreateProfileDialog, setShowCreateProfileDialog] = useState(false)
+  const [createProfileName, setCreateProfileName] = useState('')
+  const [createProfileBio, setCreateProfileBio] = useState('')
+  const [createProfileAvatar, setCreateProfileAvatar] = useState('')
+  const [isCreatingProfile, setIsCreatingProfile] = useState(false)
   const [editName, setEditName] = useState('')
   const [editBio, setEditBio] = useState('')
   const [editLocation, setEditLocation] = useState('')
@@ -57,106 +70,167 @@ export default function ProfilePage() {
   const [editAvatar, setEditAvatar] = useState('')
   const [editBanner, setEditBanner] = useState('')
   const [following, setFollowing] = useState<Set<string>>(new Set())
-  const { toast } = useToast()
+  const { getProfile } = useSui()
   
   const isOwnProfile = !id || id === currentUser?.id
 
+  // Load profile ID when viewing own profile
   useEffect(() => {
-    setTimeout(() => {
-      let profileUser: User | null = null
+    const loadProfileId = async () => {
+      if (!isOwnProfile || !currentUser) return
       
-      if (id) {
-        // Viewing another user's profile by ID
-        profileUser = getUserById(id) || null
-      } else {
-        // Viewing own profile
-        if (currentUser) {
-          profileUser = currentUser
+      try {
+        const profileExists = await checkProfileExists(currentUser.address)
+        setHasOnChainProfile(profileExists)
+        
+        if (profileExists) {
+          const id = await getUserProfileId(currentUser.address)
+          setProfileId(id)
+        }
+      } catch (error) {
+        console.error('Failed to load profile ID:', error)
+      }
+    }
+    
+    loadProfileId()
+  }, [currentUser, isOwnProfile, checkProfileExists, getUserProfileId])
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      setLoading(true)
+      try {
+        let profileUser: User | null = null
+        
+        if (id) {
+          console.log('Fetching profile for ID:', id)
+          // The ID could be either a profile ID or an address
+          // Try to fetch as address first (most common case when clicking on posts)
+          if (id.startsWith('0x')) {
+            console.log('ID looks like an address, fetching profile...')
+            profileUser = await getProfile(id)
+            console.log('Profile fetched:', profileUser)
+          }
+          
+          // Fall back to mock data if not found
+          if (!profileUser) {
+            console.log('No blockchain profile found, trying mock data')
+            profileUser = getUserById(id) || null
+          }
+          
+          if (!profileUser) {
+            console.log('No profile found at all for ID:', id)
+          }
         } else {
-          // Not connected - show realistic dummy profile
-          profileUser = {
-            id: 'demo',
-            address: '0x1234567890abcdef1234567890abcdef12345678',
-            username: 'sui_builder',
-            displayName: 'Sui Builder',
-            bio: 'Blockchain developer passionate about Web3 and decentralized applications. Building the future on Sui. 🚀 Always learning, always building.',
-            avatar: '/placeholder-user.jpg',
-            banner: '/placeholder.jpg',
-            location: 'San Francisco, CA',
-            website: 'suibuilder.dev',
-            joinedAt: new Date('2023-11-15'),
-            followersCount: 2847,
-            followingCount: 523,
-            isVerified: true,
+          // Viewing own profile
+          if (currentUser) {
+            // Try to fetch from blockchain
+            profileUser = await getProfile(currentUser.address)
+            
+            // Fall back to currentUser if not found
+            if (!profileUser) {
+              profileUser = currentUser
+            }
+          } else {
+            // Not connected - show realistic dummy profile
+            profileUser = {
+              id: 'demo',
+              address: '0x1234567890abcdef1234567890abcdef12345678',
+              username: 'sui_builder',
+              displayName: 'Sui Builder',
+              bio: 'Blockchain developer passionate about Web3 and decentralized applications. Building the future on Sui. 🚀 Always learning, always building.',
+              avatar: '/placeholder-user.jpg',
+              banner: '/placeholder.jpg',
+              location: 'San Francisco, CA',
+              website: 'suibuilder.dev',
+              joinedAt: new Date('2023-11-15'),
+              followersCount: 2847,
+              followingCount: 523,
+              isVerified: true,
+            }
           }
         }
+        
+        if (profileUser) {
+          setUser(profileUser)
+          setEditName(profileUser.displayName)
+          setEditBio(profileUser.bio || '')
+          setEditLocation(profileUser.location || '')
+          setEditWebsite(profileUser.website || '')
+          setEditAvatar(profileUser.avatar)
+          setEditBanner(profileUser.banner)
+          
+          // Get posts for this user from localStorage
+          const localPosts = JSON.parse(localStorage.getItem('suitter_posts') || '[]')
+          // Filter by wallet address instead of id
+          const localUserPosts = localPosts.filter((p: any) => 
+            p.author?.address === profileUser.address || p.authorId === profileUser.id
+          )
+          
+          // Get posts from mock data
+          const mockUserPosts = getPosts().filter(p => p.authorId === profileUser!.id)
+          
+          // Combine local and mock posts
+          const userPosts = [...localUserPosts, ...mockUserPosts]
+          const userReplies = getRepliesByUserId(profileUser.id)
+          const userMedia = getMediaPostsByUserId(profileUser.id)
+          const userLiked = getLikedPostsByUserId(profileUser.id)
+          
+          // If no posts found, use demo data to make profile look realistic
+          // For demo/guest users, always show demo data
+          // For other users, show demo data if they have no posts
+          if (userPosts.length === 0 && profileUser.id === 'demo') {
+            // Create posts with the user's info
+            const demoPosts = getPosts().slice(0, 8).map((post, index) => ({
+              ...post,
+              id: `demo-post-${index}`,
+              authorId: profileUser.id,
+              author: profileUser,
+            }))
+            setPosts(demoPosts)
+          } else {
+            setPosts(userPosts)
+          }
+          
+          if (userReplies.length === 0 && profileUser.id === 'demo') {
+            const demoReplies = mockReplies.slice(0, 5).map((reply, index) => ({
+              ...reply,
+              id: `demo-reply-${index}`,
+              authorId: profileUser.id,
+              author: profileUser,
+            }))
+            setReplies(demoReplies)
+          } else {
+            setReplies(userReplies)
+          }
+          
+          if (userMedia.length === 0 && profileUser.id === 'demo') {
+            const demoMedia = mockMediaPosts.slice(0, 6).map((post, index) => ({
+              ...post,
+              id: `demo-media-${index}`,
+              authorId: profileUser.id,
+              author: profileUser,
+            }))
+            setMediaPosts(demoMedia)
+          } else {
+            setMediaPosts(userMedia)
+          }
+          
+          // Liked posts can be from any user, so we don't need to change author
+          if (userLiked.length === 0) {
+            setLikedPosts(mockLikedPosts.slice(0, 7))
+          } else {
+            setLikedPosts(userLiked)
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch profile:', error)
+      } finally {
+        setLoading(false)
       }
-      
-      if (profileUser) {
-        setUser(profileUser)
-        setEditName(profileUser.displayName)
-        setEditBio(profileUser.bio || '')
-        setEditLocation(profileUser.location || '')
-        setEditWebsite(profileUser.website || '')
-        setEditAvatar(profileUser.avatar)
-        setEditBanner(profileUser.banner)
-        
-        // Get posts for this user, or use demo data if no posts found
-        const userPosts = getPosts().filter(p => p.authorId === profileUser!.id)
-        const userReplies = getRepliesByUserId(profileUser.id)
-        const userMedia = getMediaPostsByUserId(profileUser.id)
-        const userLiked = getLikedPostsByUserId(profileUser.id)
-        
-        // If no posts found, use demo data to make profile look realistic
-        // For demo/guest users, always show demo data
-        // For other users, show demo data if they have no posts
-        if (userPosts.length === 0) {
-          // Create posts with the user's info
-          const demoPosts = getPosts().slice(0, 8).map((post, index) => ({
-            ...post,
-            id: `demo-post-${index}`,
-            authorId: profileUser.id,
-            author: profileUser,
-          }))
-          setPosts(demoPosts)
-        } else {
-          setPosts(userPosts)
-        }
-        
-        if (userReplies.length === 0) {
-          const demoReplies = mockReplies.slice(0, 5).map((reply, index) => ({
-            ...reply,
-            id: `demo-reply-${index}`,
-            authorId: profileUser.id,
-            author: profileUser,
-          }))
-          setReplies(demoReplies)
-        } else {
-          setReplies(userReplies)
-        }
-        
-        if (userMedia.length === 0) {
-          const demoMedia = mockMediaPosts.slice(0, 6).map((post, index) => ({
-            ...post,
-            id: `demo-media-${index}`,
-            authorId: profileUser.id,
-            author: profileUser,
-          }))
-          setMediaPosts(demoMedia)
-        } else {
-          setMediaPosts(userMedia)
-        }
-        
-        // Liked posts can be from any user, so we don't need to change author
-        if (userLiked.length === 0) {
-          setLikedPosts(mockLikedPosts.slice(0, 7))
-        } else {
-          setLikedPosts(userLiked)
-        }
-      }
-      setLoading(false)
-    }, 500)
-  }, [id, currentUser])
+    }
+    
+    fetchProfile()
+  }, [id, currentUser, getProfile])
 
   const handleFollow = () => {
     setIsFollowing(!isFollowing)
@@ -248,25 +322,25 @@ export default function ProfilePage() {
     })
   }
 
-  const handleShare = (postId: string) => {
+  const handleShare = (_postId: string) => {
     toast({
       description: 'Post shared',
     })
   }
 
-  const handleMute = (userId: string) => {
+  const handleMute = (_userId: string) => {
     toast({
       description: 'User muted',
     })
   }
 
-  const handleBlock = (userId: string) => {
+  const handleBlock = (_userId: string) => {
     toast({
       description: 'User blocked',
     })
   }
 
-  const handleReport = (postId: string) => {
+  const handleReport = (_postId: string) => {
     toast({
       description: 'Post reported',
     })
@@ -282,7 +356,7 @@ export default function ProfilePage() {
     })
   }
 
-  const handleFollowUser = (userId: string) => {
+  const _handleFollowUser = (userId: string) => {
     const isFollowingUser = following.has(userId)
     
     if (isFollowingUser) {
@@ -302,8 +376,118 @@ export default function ProfilePage() {
     }
   }
 
-  const handleSaveProfile = () => {
-    if (user) {
+  const handleCreateProfile = async () => {
+    if (!createProfileName.trim() || !currentUser) return
+    
+    // Check if contract is configured
+    if (!isContractConfigured()) {
+      toast({
+        title: 'Configuration Required',
+        description: getConfigurationError(),
+      })
+      return
+    }
+    
+    setIsCreatingProfile(true)
+    try {
+      await createProfile(
+        createProfileName,
+        createProfileBio || '',
+        createProfileAvatar || '/placeholder-user.jpg'
+      )
+      
+      toast({
+        description: 'Profile created successfully on blockchain!',
+      })
+      
+      // Refresh profile data
+      const newProfileId = await getUserProfileId(currentUser.address)
+      setProfileId(newProfileId)
+      setHasOnChainProfile(true)
+      
+      // Update user state
+      if (user) {
+        setUser({
+          ...user,
+          username: createProfileName,
+          displayName: createProfileName,
+          bio: createProfileBio || '',
+          avatar: createProfileAvatar || '/placeholder-user.jpg',
+        })
+      }
+      
+      // Close dialog and reset form
+      setShowCreateProfileDialog(false)
+      setCreateProfileName('')
+      setCreateProfileBio('')
+      setCreateProfileAvatar('')
+      
+    } catch (error) {
+      console.error('Failed to create profile:', error)
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to create profile. Please try again.',
+      })
+    } finally {
+      setIsCreatingProfile(false)
+    }
+  }
+
+  const handleSaveProfile = async () => {
+    if (!user || !editName.trim()) return
+    
+    // Check if contract is configured
+    if (!isContractConfigured()) {
+      toast({
+        title: 'Configuration Required',
+        description: getConfigurationError(),
+      })
+      return
+    }
+    
+    try {
+      // If we have a profileId, update it on-chain
+      if (profileId && isOwnProfile) {
+        await updateProfileOnChain(
+          profileId,
+          editName,
+          editBio,
+          editAvatar
+        )
+        
+        toast({
+          description: 'Profile updated on blockchain',
+        })
+      } else if (isOwnProfile && !hasOnChainProfile) {
+        // Create new profile on-chain
+        try {
+          await createProfile(editName, editBio, editAvatar)
+          
+          toast({
+            description: 'Profile created on blockchain',
+          })
+          
+          // Refresh profile ID
+          if (currentUser) {
+            const newProfileId = await getUserProfileId(currentUser.address)
+            setProfileId(newProfileId)
+            setHasOnChainProfile(true)
+          }
+        } catch (error: any) {
+          if (error.message?.includes('Profile already exists')) {
+            // Profile was created in another session, just refresh
+            if (currentUser) {
+              const existingProfileId = await getUserProfileId(currentUser.address)
+              setProfileId(existingProfileId)
+              setHasOnChainProfile(true)
+            }
+          } else {
+            throw error
+          }
+        }
+      }
+      
+      // Update local state
       setUser({
         ...user,
         displayName: editName,
@@ -313,13 +497,15 @@ export default function ProfilePage() {
         avatar: editAvatar,
         banner: editBanner,
       })
-      // Update current user in auth context if it's the current user's profile
-      if (isOwnProfile && currentUser) {
-        // This would normally update the on-chain profile via useSui hook
-        // For now, we just update local state
-      }
+      
+      setShowEditDialog(false)
+    } catch (error) {
+      console.error('Failed to update profile:', error)
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to update profile. Please try again.',
+      })
     }
-    setShowEditDialog(false)
   }
 
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -410,15 +596,27 @@ export default function ProfilePage() {
         
         {isOwnProfile && currentUser && (
           <div className="absolute top-4 right-4 z-10">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowEditDialog(true)}
-              className="bg-background/95 backdrop-blur-md hover:bg-background shadow-lg border-border/50"
-            >
-              <Edit className="w-4 h-4 mr-2" />
-              Edit Profile
-            </Button>
+            {hasOnChainProfile ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowEditDialog(true)}
+                className="bg-background/95 backdrop-blur-md hover:bg-background shadow-lg border-border/50"
+              >
+                <Edit className="w-4 h-4 mr-2" />
+                Edit Profile
+              </Button>
+            ) : (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => setShowCreateProfileDialog(true)}
+                className="bg-primary/95 backdrop-blur-md hover:bg-primary shadow-lg"
+              >
+                <UserPlus className="w-4 h-4 mr-2" />
+                Create Profile
+              </Button>
+            )}
           </div>
         )}
       </div>
@@ -481,9 +679,7 @@ export default function ProfilePage() {
                 </Button>
               )}
               {isOwnProfile && !currentUser && (
-                <Link to="/">
-                  <Button className="font-semibold">Connect Wallet</Button>
-                </Link>
+                <WalletConnectButton />
               )}
               {currentUser && (
                 <Button variant="outline" size="icon" className="hover:bg-muted">
@@ -714,6 +910,98 @@ export default function ProfilePage() {
           </TabsContent>
         </Tabs>
       </div>
+
+      {/* Create Profile Dialog */}
+      <Dialog open={showCreateProfileDialog} onOpenChange={setShowCreateProfileDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-2xl font-bold">Create Your Profile</DialogTitle>
+            <DialogDescription className="text-base">
+              Set up your on-chain profile to get started
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            {/* Username */}
+            <div>
+              <Label htmlFor="create-name" className="text-base font-semibold">
+                Username <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="create-name"
+                value={createProfileName}
+                onChange={(e) => setCreateProfileName(e.target.value)}
+                placeholder="Your display name"
+                className="mt-2"
+                maxLength={50}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                This will be your on-chain identity
+              </p>
+            </div>
+
+            {/* Bio */}
+            <div>
+              <Label htmlFor="create-bio" className="text-base font-semibold">
+                Bio <span className="text-muted-foreground text-sm">(optional)</span>
+              </Label>
+              <Textarea
+                id="create-bio"
+                value={createProfileBio}
+                onChange={(e) => setCreateProfileBio(e.target.value)}
+                placeholder="Tell us about yourself..."
+                className="mt-2 resize-none"
+                rows={3}
+                maxLength={160}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                {createProfileBio.length}/160 characters
+              </p>
+            </div>
+
+            {/* Avatar URL */}
+            <div>
+              <Label htmlFor="create-avatar" className="text-base font-semibold">
+                Avatar URL <span className="text-muted-foreground text-sm">(optional)</span>
+              </Label>
+              <Input
+                id="create-avatar"
+                value={createProfileAvatar}
+                onChange={(e) => setCreateProfileAvatar(e.target.value)}
+                placeholder="https://example.com/avatar.jpg"
+                className="mt-2"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Leave empty to use default avatar
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowCreateProfileDialog(false)}
+              disabled={isCreatingProfile}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateProfile}
+              disabled={!createProfileName.trim() || isCreatingProfile}
+              className="min-w-[120px]"
+            >
+              {isCreatingProfile ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                'Create Profile'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Edit Profile Dialog */}
       <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>

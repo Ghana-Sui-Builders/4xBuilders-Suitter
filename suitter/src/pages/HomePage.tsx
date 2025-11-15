@@ -5,18 +5,22 @@ import { CreatePostModal } from '@/components/CreatePostModal'
 import { Button } from '@/components/ui/Button'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Plus } from 'lucide-react'
-import { getPosts, mockUsers, type Post } from '@/lib/mockData'
+import { getPosts } from '@/lib/mockData'
+import { type Post } from '@/lib/types'
 import { useToast } from '@/hooks/useToast'
-import { useAuth } from '@/context/AuthContext'
+import { useSui } from '@/hooks/useSui'
+import { fetchLikesForPost, hasUserLikedPost } from '@/services/suiService'
+import { useCurrentAccount } from '@mysten/dapp-kit'
 
 export default function HomePage() {
-  const { currentUser } = useAuth()
   const [activeTab, setActiveTab] = useState('foryou')
   const [showCreatePost, setShowCreatePost] = useState(false)
   const [posts, setPosts] = useState<Post[]>([])
   const [loading, setLoading] = useState(true)
   const [following, setFollowing] = useState<Set<string>>(new Set())
   const { toast } = useToast()
+  const { getPosts: getPostsFromChain, likePost, getProfile, getSuiClient } = useSui()
+  const currentAccount = useCurrentAccount()
 
   // Load following state from localStorage on mount and when tab changes
   useEffect(() => {
@@ -40,30 +44,198 @@ export default function HomePage() {
     }
   }, [following])
 
-  useEffect(() => {
-    // Simulate loading
-    setLoading(true)
-    setTimeout(() => {
-      const followedUserIds = Array.from(following)
-      const fetchedPosts = getPosts(activeTab as 'foryou' | 'following', followedUserIds)
-      setPosts(fetchedPosts)
-      setLoading(false)
-    }, 500)
-  }, [activeTab, following])
-
-  const handlePostCreated = () => {
-    // Refresh posts after creating a new one
-    const followedUserIds = Array.from(following)
-    const fetchedPosts = getPosts(activeTab as 'foryou' | 'following', followedUserIds)
-    setPosts(fetchedPosts)
+  // Helper function to enrich posts with profile data from blockchain
+  const enrichPostsWithProfiles = async (posts: Post[]): Promise<Post[]> => {
+    const suiClient = getSuiClient()
+    const enrichedPosts = await Promise.all(
+      posts.map(async (post) => {
+        try {
+          // Fetch profile for the author's address
+          const profile = await getProfile(post.author.address)
+          
+          // Fetch like count and check if current user liked it
+          let likeCount = post.likeCount || 0
+          let liked = post.liked || false
+          
+          if (post.id.startsWith('0x')) {
+            likeCount = await fetchLikesForPost(suiClient, post.id)
+            if (currentAccount) {
+              liked = await hasUserLikedPost(suiClient, post.id, currentAccount.address)
+            }
+          }
+          
+          if (profile) {
+            return {
+              ...post,
+              likeCount,
+              liked,
+              author: {
+                ...post.author,
+                username: profile.username,
+                displayName: profile.displayName,
+                avatar: profile.avatar,
+                bio: profile.bio,
+              }
+            }
+          }
+          
+          return {
+            ...post,
+            likeCount,
+            liked,
+          }
+        } catch (error) {
+          console.error(`Failed to fetch profile for ${post.author.address}:`, error)
+        }
+        return post
+      })
+    )
+    return enrichedPosts
   }
 
-  const handleLike = (postId: string) => {
+  useEffect(() => {
+    // Fetch posts from blockchain
+    const fetchPosts = async () => {
+      setLoading(true)
+      try {
+        const chainPosts = await getPostsFromChain(20, 0)
+        
+        // Load local posts from localStorage
+        const localPosts = JSON.parse(localStorage.getItem('suitter_posts') || '[]')
+        
+        // Combine blockchain posts with local posts
+        let allPosts = [...localPosts, ...chainPosts]
+        
+        // Enrich posts with profile data
+        allPosts = await enrichPostsWithProfiles(allPosts)
+        
+        // If no posts at all, fall back to mock data
+        if (allPosts.length === 0) {
+          const followedUserIds = Array.from(following)
+          const mockPosts = getPosts(activeTab as 'foryou' | 'following', followedUserIds)
+          setPosts(mockPosts)
+        } else {
+          // Filter posts based on active tab
+          if (activeTab === 'following' && following.size > 0) {
+            const followedUserIds = Array.from(following)
+            const filteredPosts = allPosts.filter(post => followedUserIds.includes(post.author.id))
+            setPosts(filteredPosts)
+          } else {
+            setPosts(allPosts)
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch posts:', error)
+        // Try loading from localStorage on error
+        const localPosts = JSON.parse(localStorage.getItem('suitter_posts') || '[]')
+        if (localPosts.length > 0) {
+          setPosts(localPosts)
+        } else {
+          // Fall back to mock data
+          const followedUserIds = Array.from(following)
+          const mockPosts = getPosts(activeTab as 'foryou' | 'following', followedUserIds)
+          setPosts(mockPosts)
+        }
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchPosts()
+  }, [activeTab, following, getPostsFromChain, getProfile, getSuiClient, currentAccount])
+
+  const handlePostCreated = async () => {
+    // Refresh posts after creating a new one
+    setLoading(true)
+    try {
+      const chainPosts = await getPostsFromChain(20, 0)
+      const localPosts = JSON.parse(localStorage.getItem('suitter_posts') || '[]')
+      let allPosts = [...localPosts, ...chainPosts]
+      
+      // Enrich posts with profile data
+      allPosts = await enrichPostsWithProfiles(allPosts)
+      
+      if (allPosts.length === 0) {
+        const followedUserIds = Array.from(following)
+        const mockPosts = getPosts(activeTab as 'foryou' | 'following', followedUserIds)
+        setPosts(mockPosts)
+      } else {
+        if (activeTab === 'following' && following.size > 0) {
+          const followedUserIds = Array.from(following)
+          const filteredPosts = allPosts.filter(post => followedUserIds.includes(post.author.id))
+          setPosts(filteredPosts)
+        } else {
+          setPosts(allPosts)
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch posts:', error)
+      const localPosts = JSON.parse(localStorage.getItem('suitter_posts') || '[]')
+      if (localPosts.length > 0) {
+        setPosts(localPosts)
+      } else {
+        const followedUserIds = Array.from(following)
+        const mockPosts = getPosts(activeTab as 'foryou' | 'following', followedUserIds)
+        setPosts(mockPosts)
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleLike = async (postId: string) => {
+    if (!currentAccount) {
+      toast({
+        title: 'Error',
+        description: 'Please connect your wallet to like posts',
+      })
+      return
+    }
+    
+    // Optimistically update UI
+    const previousPosts = [...posts]
+    const post = posts.find(p => p.id === postId)
+    const wasLiked = post?.liked || false
+    
     setPosts(posts.map(post => 
       post.id === postId 
         ? { ...post, liked: !post.liked, likeCount: post.liked ? post.likeCount - 1 : post.likeCount + 1 }
         : post
     ))
+
+    // Send to blockchain
+    try {
+      await likePost(postId)
+      
+      // Refresh like count from blockchain after a short delay
+      setTimeout(async () => {
+        try {
+          const suiClient = getSuiClient()
+          const likeCount = await fetchLikesForPost(suiClient, postId)
+          const liked = await hasUserLikedPost(suiClient, postId, currentAccount.address)
+          
+          setPosts(prevPosts => prevPosts.map(post => 
+            post.id === postId 
+              ? { ...post, liked, likeCount }
+              : post
+          ))
+        } catch (err) {
+          console.error('Failed to refresh like count:', err)
+        }
+      }, 2000)
+      
+      toast({
+        description: wasLiked ? 'Post unliked successfully' : 'Post liked successfully',
+      })
+    } catch (error) {
+      console.error('Failed to like post on blockchain:', error)
+      // Revert on error
+      setPosts(previousPosts)
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to like post. Please try again.',
+      })
+    }
   }
 
   const handleReshare = (postId: string) => {
@@ -88,31 +260,31 @@ export default function HomePage() {
     })
   }
 
-  const handleCopyLink = (postId: string) => {
+  const handleCopyLink = (_postId: string) => {
     toast({
       description: 'Link copied to clipboard',
     })
   }
 
-  const handleShare = (postId: string) => {
+  const handleShare = (_postId: string) => {
     toast({
       description: 'Post shared',
     })
   }
 
-  const handleMute = (userId: string) => {
+  const handleMute = (_userId: string) => {
     toast({
       description: 'User muted',
     })
   }
 
-  const handleBlock = (userId: string) => {
+  const handleBlock = (_userId: string) => {
     toast({
       description: 'User blocked',
     })
   }
 
-  const handleReport = (postId: string) => {
+  const handleReport = (_postId: string) => {
     toast({
       description: 'Post reported',
     })
